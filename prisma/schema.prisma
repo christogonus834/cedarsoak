@@ -1,0 +1,495 @@
+// CedarOaks Cooperative Platform — Database Schema
+// Design principles enforced here:
+//   1. Wallet balance is NEVER stored directly — it is derived from LedgerEntry rows.
+//   2. LedgerEntry is append-only. No application code path should ever UPDATE or DELETE a row here.
+//   3. A User can hold many Memberships (one per Cooperative) — see section 3 of the design doc.
+//   4. Every obligation/ledger entry affecting a cooperative is scoped by membershipId, never userId alone.
+//   5. AuditLog captures every sensitive write across the system.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// IDENTITY
+// ─────────────────────────────────────────────────────────────
+
+enum UserRole {
+  MEMBER
+  COOPERATIVE_ADMIN
+  SUPER_ADMIN
+}
+
+model User {
+  id                String        @id @default(uuid())
+  email             String        @unique
+  phoneNumber       String        @unique
+  passwordHash      String
+  firstName         String
+  lastName          String
+  role              UserRole      @default(MEMBER)
+
+  // BVN is never stored raw. bvnVerified is set true only after a successful
+  // Monnify reserved-account creation call (which validates the BVN for us).
+  // bvnHash is a SHA-256 hash of the BVN, kept ONLY to detect the same BVN
+  // being used to register multiple accounts — it cannot be reversed back to
+  // the original number. The raw BVN itself is used exactly once, in-memory,
+  // for the outbound call to Monnify (see WalletService.verifyBvnAndProvisionAccount),
+  // and is never written to any column in this database.
+  bvnVerified       Boolean       @default(false)
+  bvnHash           String?       @unique
+
+  isActive          Boolean       @default(true)
+  deviceFingerprints DeviceFingerprint[]
+
+  // Set only when role = COOPERATIVE_ADMIN — which single cooperative this
+  // admin manages. Null for MEMBER and for SUPER_ADMIN (whose access is
+  // platform-wide, not tied to one cooperative). This is deliberately a
+  // separate concept from Membership — an admin managing a cooperative is
+  // not the same relationship as a member contributing to one, even though
+  // in practice one person could be both.
+  adminOfCooperativeId String?
+  adminOfCooperative   Cooperative? @relation("CooperativeAdmins", fields: [adminOfCooperativeId], references: [id])
+
+  // One user, one dedicated virtual account, one wallet — shared across all their memberships.
+  wallet            Wallet?
+
+  memberships       Membership[]
+  refreshTokens     RefreshToken[]
+  otps              Otp[]
+  loginEvents       LoginEvent[]
+  loginChallenges   LoginChallenge[]
+  auditLogsAsActor  AuditLog[]    @relation("ActorUser")
+
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([email])
+  @@index([phoneNumber])
+}
+
+model DeviceFingerprint {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  fingerprint String
+  lastSeenAt  DateTime @default(now())
+  isTrusted   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, fingerprint])
+}
+
+model RefreshToken {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// ADAPTIVE AUTHENTICATION  (login history + pending confirmations)
+// ─────────────────────────────────────────────────────────────
+
+// One row per login attempt outcome. This history is the "what is normal for
+// this account" baseline that RiskService compares each new login against.
+// Only a normalized network prefix is stored (first three IPv4 octets), never
+// the full IP address — enough to recognise a familiar network, less personal
+// data held (NDPR-friendly).
+model LoginEvent {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  ipPrefix    String?
+  fingerprint String?  // SHA-256 of the client-supplied device id, never the raw value
+  hourOfDay   Int      // 0-23 in the configured RISK_TIMEZONE at the time of login
+  outcome     String   // SUCCESS | CHALLENGED | CHALLENGE_PASSED
+  reasons     String[] // which risk signals fired, e.g. NEW_DEVICE, NEW_NETWORK
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// A login that passed the password check but was blocked pending
+// confirmation. No tokens exist until this is confirmed with a valid code
+// from the same device that started it.
+model LoginChallenge {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  fingerprint String?
+  ipPrefix    String?
+  reasons     String[]
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// OTP  (password reset, and future admin/staff adaptive-auth confirmation)
+// ─────────────────────────────────────────────────────────────
+
+model Otp {
+  id          String    @id @default(uuid())
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id])
+  destination String    // the email address or phone number it was sent to
+  channel     String    // EMAIL | SMS
+  purpose     String    // PASSWORD_RESET | LOGIN_VERIFICATION (future) | etc.
+
+  // The code itself is hashed at rest, exactly like a password — a database
+  // leak should never hand out usable OTP codes, even ones already expired.
+  codeHash    String
+
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  attempts    Int       @default(0) // failed verification attempts against this specific OTP
+
+  createdAt   DateTime  @default(now())
+
+  @@index([userId, purpose])
+  @@index([destination, purpose])
+}
+
+// ─────────────────────────────────────────────────────────────
+// COOPERATIVES & MEMBERSHIP  (many-to-many via Membership)
+// ─────────────────────────────────────────────────────────────
+
+model Cooperative {
+  id                    String        @id @default(uuid())
+  name                  String
+  code                  String        @unique // e.g. "CEDAROAKS123"
+  description           String?
+  location              String?
+  membershipFee         Decimal       @db.Decimal(14, 2)
+  contributionAmount    Decimal       @db.Decimal(14, 2) // exact amount owed per period
+  contributionFrequency String        @default("monthly")
+  latePenaltyAmount     Decimal       @default(0) @db.Decimal(14, 2)
+  loanInterestPercent   Decimal       @default(0) @db.Decimal(5, 2) // admin-configurable, monthly
+  loanMultiplier        Decimal       @default(2) @db.Decimal(4, 2) // 2x savings, per our design
+
+  memberships           Membership[]
+  loans                 Loan[]
+  announcements         Announcement[]
+  admins                User[]        @relation("CooperativeAdmins")
+
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+}
+
+enum MembershipStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  LEFT
+}
+
+model Membership {
+  id             String            @id @default(uuid())
+  memberIdCode   String            // cooperative-scoped display ID, e.g. "CEDAROAKS123"
+  userId         String
+  user           User              @relation(fields: [userId], references: [id])
+  cooperativeId  String
+  cooperative    Cooperative       @relation(fields: [cooperativeId], references: [id])
+  status         MembershipStatus  @default(PENDING)
+
+  obligations    ContributionObligation[]
+  ledgerEntries  LedgerEntry[]     @relation("MembershipLedger")
+  loansAsBorrower Loan[]           @relation("Borrower")
+  loansAsGuarantor Loan[]          @relation("Guarantor")
+
+  joinedAt       DateTime          @default(now())
+  leftAt         DateTime?
+
+  // A member cannot have two membership rows in the same cooperative.
+  @@unique([userId, cooperativeId])
+  @@unique([cooperativeId, memberIdCode])
+  @@index([cooperativeId, status])
+}
+
+// ─────────────────────────────────────────────────────────────
+// WALLET & LEDGER  (append-only, balance always derived)
+// ─────────────────────────────────────────────────────────────
+
+model Wallet {
+  id                    String   @id @default(uuid())
+  userId                String   @unique
+  user                  User     @relation(fields: [userId], references: [id])
+
+  // Dedicated virtual account for funding (Monnify or active backup provider).
+  vanProvider           String?  // "MONNIFY" | "BACKUP_PROVIDER_A" | "BACKUP_PROVIDER_B"
+  vanAccountNumber      String?  @unique
+  vanBankName           String?
+  vanAccountReference   String?  @unique
+
+  // NOTE: no `balance` column. Balance is always computed as:
+  //   SUM(WalletLedgerEntry.amount WHERE type = CREDIT) - SUM(... WHERE type = DEBIT)
+  // This is enforced at the service layer — never write directly to a balance field.
+
+  lockedBalance         Decimal  @default(0) @db.Decimal(14, 2)
+  // ^ Reserved for guarantor collateral (see loan module). Withdrawable balance =
+  //   derived wallet balance - lockedBalance. This field IS mutated directly, but only
+  //   by the loan-lock/unlock service methods, never by payment code.
+
+  ledgerEntries         WalletLedgerEntry[]
+  withdrawalRequests    WithdrawalRequest[]
+
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+enum WalletEntryType {
+  CREDIT // funding via VAN, loan disbursement
+  DEBIT  // payment to a cooperative, withdrawal
+}
+
+enum WalletEntrySource {
+  VAN_FUNDING
+  COOPERATIVE_PAYMENT
+  LOAN_DISBURSEMENT
+  LOAN_REPAYMENT
+  WITHDRAWAL
+  ADJUSTMENT // admin-initiated correction, always tied to an AuditLog entry
+}
+
+model WalletLedgerEntry {
+  id              String            @id @default(uuid())
+  walletId        String
+  wallet          Wallet            @relation(fields: [walletId], references: [id])
+  type            WalletEntryType
+  source          WalletEntrySource
+  amount          Decimal           @db.Decimal(14, 2)
+
+  // Idempotency: prevents the same external event/request from being applied twice.
+  idempotencyKey  String            @unique
+
+  // Links this wallet movement to the cooperative-side ledger entry it corresponds to,
+  // when relevant (e.g. a COOPERATIVE_PAYMENT debit pairs with a MembershipLedger credit).
+  relatedLedgerEntryId String?
+
+  providerReference String?         // external transaction reference (Monnify/Paystack)
+  metadata        Json?
+
+  createdAt       DateTime          @default(now())
+  // No `updatedAt` — this table is append-only, never updated.
+
+  @@index([walletId])
+  @@index([idempotencyKey])
+}
+
+// Cooperative-side ledger — tracks what a member has paid toward that specific cooperative.
+enum LedgerEntryType {
+  CONTRIBUTION_PAYMENT
+  LOAN_REPAYMENT
+  PAYMENT_ADJUSTMENT // admin-only correction, always tied to an AuditLog entry
+}
+
+model LedgerEntry {
+  id              String          @id @default(uuid())
+  membershipId    String
+  membership      Membership      @relation("MembershipLedger", fields: [membershipId], references: [id])
+  type            LedgerEntryType
+  amount          Decimal         @db.Decimal(14, 2)
+  period          String          // e.g. "2024-11"
+
+  idempotencyKey  String          @unique
+  walletLedgerEntryId String?     // link back to the wallet-side debit that funded this
+
+  // For a PAYMENT_ADJUSTMENT entry, points back to the original
+  // CONTRIBUTION_PAYMENT entry it corrects/reverses. Null for ordinary
+  // payments. This is what lets future reporting distinguish "a real
+  // contribution" from "an admin-issued reversal of one" without ever
+  // deleting or editing the original row.
+  relatedLedgerEntryId String?
+
+  // Set only on LOAN_REPAYMENT entries — which loan this repayment applies
+  // to. `period` above is reused loosely for repayments too (the YYYY-MM the
+  // repayment was made in) rather than adding a parallel field, since it
+  // already exists and serves the same "when did this happen" purpose.
+  loanId          String?
+
+  createdAt       DateTime        @default(now())
+  // Append-only — corrections happen via a new PAYMENT_ADJUSTMENT entry, never an UPDATE.
+
+  @@index([membershipId, period])
+  @@index([loanId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONTRIBUTION OBLIGATIONS  (what is owed, and whether it's been met)
+// ─────────────────────────────────────────────────────────────
+
+enum ObligationStatus {
+  PENDING
+  PAID
+  OVERDUE
+}
+
+model ContributionObligation {
+  id             String           @id @default(uuid())
+  membershipId   String
+  membership     Membership       @relation(fields: [membershipId], references: [id])
+  period         String           // e.g. "2024-11"
+  baseAmount     Decimal          @db.Decimal(14, 2)
+  penaltyAmount  Decimal          @default(0) @db.Decimal(14, 2)
+  status         ObligationStatus @default(PENDING)
+  dueDate        DateTime
+  paidAt         DateTime?
+
+  @@unique([membershipId, period])
+  @@index([membershipId, status])
+}
+
+// ─────────────────────────────────────────────────────────────
+// LOANS & GUARANTORS
+// ─────────────────────────────────────────────────────────────
+
+enum LoanStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  ACTIVE
+  REPAID
+  DEFAULTED
+}
+
+model Loan {
+  id                String       @id @default(uuid())
+  cooperativeId     String
+  cooperative       Cooperative  @relation(fields: [cooperativeId], references: [id])
+
+  borrowerMembershipId String
+  borrowerMembership Membership @relation("Borrower", fields: [borrowerMembershipId], references: [id])
+
+  guarantorMembershipId String
+  guarantorMembership Membership @relation("Guarantor", fields: [guarantorMembershipId], references: [id])
+
+  amount            Decimal      @db.Decimal(14, 2)
+  interestPercent   Decimal      @db.Decimal(5, 2) // snapshotted from the cooperative's rate at request time
+  status            LoanStatus   @default(REQUESTED)
+
+  // ── Separation of duties (see security design doc, control #25) ──────
+  // Approval and disbursement are deliberately two distinct actions, and
+  // the service layer enforces that the disbursing admin cannot be the same
+  // person who approved — no single admin can both approve and disburse.
+  approvedByUserId  String?      // cooperative admin who approved
+  approvedAt        DateTime?
+  disbursedByUserId String?      // MUST differ from approvedByUserId — enforced in AdminLoansService
+  disbursedAt       DateTime?
+
+  rejectedByUserId  String?
+  rejectedAt        DateTime?
+  rejectionReason   String?
+
+  repaidAt          DateTime?    // set once the outstanding balance reaches zero
+
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([cooperativeId, status])
+  @@index([borrowerMembershipId])
+  @@index([guarantorMembershipId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// ANNOUNCEMENTS
+// ─────────────────────────────────────────────────────────────
+
+model Announcement {
+  id             String       @id @default(uuid())
+  cooperativeId  String
+  cooperative    Cooperative  @relation(fields: [cooperativeId], references: [id])
+  type           String       // GENERAL | URGENT | REMINDER
+  subject        String
+  message        String
+  sentAt         DateTime?
+  createdByUserId String
+  createdAt      DateTime     @default(now())
+}
+
+// ─────────────────────────────────────────────────────────────
+// AUDIT LOG  (immutable, append-only — never updated or deleted)
+// ─────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────
+// PLATFORM SETTINGS  (e.g. which VAN provider is currently active)
+// ─────────────────────────────────────────────────────────────
+
+model PlatformSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+  updatedByUserId String?
+}
+
+// ─────────────────────────────────────────────────────────────
+// WITHDRAWALS  (wallet -> bank, via Paystack)
+// ─────────────────────────────────────────────────────────────
+
+enum WithdrawalStatus {
+  PENDING        // wallet debited, Paystack transfer initiated, awaiting outcome
+  OTP_REQUIRED   // Paystack account has OTP-confirmation enabled — needs manual admin action; ideally disabled in Paystack dashboard for full automation
+  SUCCESSFUL     // confirmed via webhook + independent re-verification
+  FAILED         // Paystack could not complete the transfer — wallet was credited back
+  REVERSED       // transfer succeeded then was later reversed by the bank — wallet was credited back
+}
+
+model WithdrawalRequest {
+  id                     String           @id @default(uuid())
+  walletId               String
+  wallet                 Wallet           @relation(fields: [walletId], references: [id])
+  amount                 Decimal          @db.Decimal(14, 2)
+  bankAccountNumber      String
+  bankCode               String
+  resolvedAccountName    String?          // from Paystack's account-resolve check, kept for the audit trail
+  status                 WithdrawalStatus @default(PENDING)
+
+  // Doubles as the Paystack transfer `reference` AND our own idempotency key —
+  // one identifier ties the wallet debit, the Paystack call, and the webhook
+  // together end to end.
+  idempotencyKey         String           @unique
+  paystackTransferCode   String?
+  paystackRecipientCode  String?
+
+  // The WITHDRAWAL debit that reserved the funds up front, and — only if this
+  // withdrawal ends in FAILED/REVERSED — the ADJUSTMENT credit that reversed it.
+  debitLedgerEntryId     String?          @unique
+  reversalLedgerEntryId  String?          @unique
+
+  failureReason          String?
+
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+
+  @@index([walletId, status])
+}
+
+model AuditLog {
+  id             String   @id @default(uuid())
+  actorUserId    String?
+  actor          User?    @relation("ActorUser", fields: [actorUserId], references: [id])
+  action         String   // e.g. "PAYMENT_ADJUSTMENT", "LOAN_APPROVED", "ADMIN_LOGIN"
+  entityType     String   // e.g. "LedgerEntry", "Loan", "Membership"
+  entityId       String?
+  beforeState    Json?
+  afterState     Json?
+  ipAddress      String?
+  deviceInfo     String?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorUserId])
+}

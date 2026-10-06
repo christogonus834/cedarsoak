@@ -1,0 +1,1359 @@
+{
+  "info": {
+    "_postman_id": "cedaroaks-api-collection",
+    "name": "CedarOaks API",
+    "description": "CedarOaks Cooperative Platform API. Import this alongside the CedarOaks - Local environment. Requests are ordered to be run top-to-bottom on a fresh database \u2014 each one automatically saves the values the next request needs (accessToken, membershipId, etc.) via test scripts, so you rarely need to copy/paste anything by hand.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"mary{{$randomInt}}@example.com\",\n  \"phoneNumber\": \"+234812334{{$randomInt}}\",\n  \"firstName\": \"Mary\",\n  \"lastName\": \"Ikott\",\n  \"password\": \"Testpass1!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 201/200', function () { pm.expect([200,201]).to.include(pm.response.code); });",
+                  "const data = pm.response.json();",
+                  "pm.environment.set('accessToken', data.accessToken);",
+                  "pm.environment.set('refreshToken', data.refreshToken);",
+                  "pm.environment.set('userId', data.user.id);",
+                  "pm.test('Response does not leak passwordHash', function () { pm.expect(data.user.passwordHash).to.be.undefined; });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-device-id",
+                "value": "{{$randomUUID}}",
+                "description": "A stable per-device id in real use; randomized here per Postman run for convenience. Set this to a fixed value manually if you want to test the 'trusted device' behavior across repeated requests."
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"mary@example.com\",\n  \"password\": \"Testpass1!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "May return tokens directly, or { challengeRequired: true, challengeId } if this login looks unusual for the account (very likely on a fresh test account's first login, or for any admin/staff account, since they are challenged on just one signal). If challenged, run 'Confirm Login Challenge' next with the code from your server console."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const data = pm.response.json();",
+                  "if (data.challengeRequired) {",
+                  "  pm.environment.set('challengeId', data.challengeId);",
+                  "  console.log('Login blocked pending confirmation. Reasons: ' + JSON.stringify(data.reasons) + '. Check server console (NOTIFICATIONS_DRY_RUN=true) for the code, then run \\'Confirm Login Challenge\\'.');",
+                  "} else {",
+                  "  pm.environment.set('accessToken', data.accessToken);",
+                  "  pm.environment.set('refreshToken', data.refreshToken);",
+                  "  pm.environment.set('userId', data.user.id);",
+                  "}",
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Confirm Login Challenge",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-device-id",
+                "value": "{{$randomUUID}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"challengeId\": \"{{challengeId}}\",\n  \"code\": \"123456\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login",
+                "confirm"
+              ]
+            },
+            "description": "Only needed when Login returned challengeRequired: true. Get the real code from your server console (search for '[DRY RUN] Email') and paste it in place of 123456 before sending."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const data = pm.response.json();",
+                  "pm.environment.set('accessToken', data.accessToken);",
+                  "pm.environment.set('refreshToken', data.refreshToken);",
+                  "pm.environment.set('userId', data.user.id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const data = pm.response.json();",
+                  "pm.environment.set('accessToken', data.accessToken);",
+                  "pm.environment.set('refreshToken', data.refreshToken);",
+                  "pm.test('Old refresh token was rotated (new token differs)', function () { pm.expect(data.refreshToken).to.not.be.empty; });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Forgot Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"mary@example.com\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/forgot-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "forgot-password"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200 regardless of whether the email exists', function () { pm.response.to.have.status(200); });",
+                  "console.log('Check your server logs (or Brevo dashboard if NOTIFICATIONS_DRY_RUN=false) for the OTP code.');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reset Password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"mary@example.com\",\n  \"code\": \"123456\",\n  \"newPassword\": \"Newpass1!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/reset-password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "reset-password"
+              ]
+            },
+            "description": "Get the real 6-digit code from your server console logs (NOTIFICATIONS_DRY_RUN=true logs it as '[DRY RUN] Email...') and paste it in place of 123456 before sending."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Users",
+      "item": [
+        {
+          "name": "Get My Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/users/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Does not include passwordHash', function () { pm.expect(pm.response.json().passwordHash).to.be.undefined; });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Cooperatives",
+      "item": [
+        {
+          "name": "Create Cooperative (requires SUPER_ADMIN \u2014 see TESTING.md)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"CedarOaks Cooperative Society\",\n  \"code\": \"{{cooperativeCode}}\",\n  \"description\": \"Our own internal cooperative, built for everyone.\",\n  \"location\": \"Abuja, FCT\",\n  \"membershipFee\": \"2000.00\",\n  \"contributionAmount\": \"50000.00\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cooperatives",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cooperatives"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201 || pm.response.code === 200) {",
+                  "  pm.environment.set('cooperativeId', pm.response.json().id);",
+                  "}",
+                  "pm.test('Status is 201 (or 403 if this user is not yet SUPER_ADMIN \u2014 see TESTING.md)', function () {",
+                  "  pm.expect([200,201,403]).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Cooperative by Code",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/cooperatives/by-code/{{cooperativeCode}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cooperatives",
+                "by-code",
+                "{{cooperativeCode}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) { pm.environment.set('cooperativeId', pm.response.json().id); }",
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Memberships",
+      "item": [
+        {
+          "name": "Join Cooperative",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cooperativeCode\": \"{{cooperativeCode}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/memberships/join",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "memberships",
+                "join"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 201', function () { pm.response.to.have.status(201); });",
+                  "const data = pm.response.json();",
+                  "pm.environment.set('membershipId', data.id);",
+                  "pm.test('memberIdCode was generated', function () { pm.expect(data.memberIdCode).to.not.be.empty; });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get My Memberships",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/memberships/mine",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "memberships",
+                "mine"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Wallet",
+      "item": [
+        {
+          "name": "Verify BVN & Generate Virtual Account",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bvn\": \"22222222222\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/wallet/virtual-account",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallet",
+                "virtual-account"
+              ]
+            },
+            "description": "Use a Monnify SANDBOX test BVN \u2014 check Monnify's sandbox documentation for currently valid test BVN values, as these can change. This call will fail with a real Monnify error if MONNIFY_API_KEY/SECRET_KEY/CONTRACT_CODE in your .env are not set to valid sandbox credentials."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  pm.environment.set('walletId', pm.response.json().id);",
+                  "  pm.environment.set('vanAccountNumber', pm.response.json().vanAccountNumber);",
+                  "}",
+                  "pm.test('Status is 200/201', function () { pm.expect([200,201]).to.include(pm.response.code); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get My Wallet",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallet/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallet",
+                "me"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Balance is a string (not a lossy float)', function () { pm.expect(typeof pm.response.json().balance).to.eql('string'); });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Banks",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallet/banks",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallet",
+                "banks"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Withdraw",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"1000.00\",\n  \"bankAccountNumber\": \"0000000000\",\n  \"bankCode\": \"058\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/wallet/withdraw",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallet",
+                "withdraw"
+              ]
+            },
+            "description": "This will fail with 'insufficient wallet balance' until the wallet has actually been funded via a real Monnify sandbox transfer \u2014 see TESTING.md for the full flow."
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Contributions",
+      "item": [
+        {
+          "name": "Get Contribution Summary",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/memberships/{{membershipId}}/contributions/summary",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "memberships",
+                "{{membershipId}}",
+                "contributions",
+                "summary"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200', function () { pm.response.to.have.status(200); });",
+                  "const data = pm.response.json();",
+                  "pm.environment.set('lastTotalDue', data.totalDue);",
+                  "pm.test('totalDue is present', function () { pm.expect(data.totalDue).to.not.be.undefined; });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pay Contribution (exact amount required)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"{{lastTotalDue}}\",\n  \"idempotencyKey\": \"{{$guid}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/memberships/{{membershipId}}/contributions/pay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "memberships",
+                "{{membershipId}}",
+                "contributions",
+                "pay"
+              ]
+            },
+            "description": "Uses Postman's built-in {{$guid}} dynamic variable to generate a fresh idempotencyKey each send. Re-sending the EXACT same request body (e.g. by clicking Send twice without Postman regenerating {{$guid}}, which it does automatically per request) simulates a retried request and should return the same result rather than double-charging \u2014 to actually test that, copy the resolved idempotencyKey from the first response's console log and hardcode it into the body for a second manual send."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Status is 200/201 if wallet had sufficient exact funds, 400 if amount mismatched, or 400 insufficient balance if wallet is empty', function () {",
+                  "  pm.expect([200,201,400,409]).to.include(pm.response.code);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Payment History",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/memberships/{{membershipId}}/contributions/history",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "memberships",
+                "{{membershipId}}",
+                "contributions",
+                "history"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. Webhooks (Advanced \u2014 Signature Simulation)",
+      "item": [
+        {
+          "name": "Simulate Monnify SUCCESSFUL_TRANSACTION",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventType\": \"SUCCESSFUL_TRANSACTION\",\n  \"eventData\": {\n    \"product\": { \"reference\": \"user-{{userId}}\", \"type\": \"RESERVED_ACCOUNT\" },\n    \"transactionReference\": \"MNFY|TEST|{{$timestamp}}\",\n    \"paymentReference\": \"TEST-{{$timestamp}}\",\n    \"amountPaid\": 50000,\n    \"paymentStatus\": \"PAID\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/monnify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "monnify"
+              ]
+            },
+            "description": "IMPORTANT: this only actually credits a wallet if verifyTransaction() against the REAL Monnify sandbox API also confirms this transactionReference as PAID \u2014 since we independently re-verify every webhook rather than trusting the payload. A fully self-contained Postman-only simulation (without a matching real Monnify sandbox transaction) will correctly be rejected as unverifiable. Use this primarily to test signature verification itself (see pre-request script), not to fabricate a fake credit."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "const secretKey = pm.environment.get('monnifySecretKey');",
+                  "const body = pm.request.body.raw;",
+                  "const hash = CryptoJS.HmacSHA512(body, secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'monnify-signature', value: hash });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Simulate Paystack transfer.success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event\": \"transfer.success\",\n  \"data\": { \"reference\": \"REPLACE_WITH_REAL_WITHDRAWAL_IDEMPOTENCY_KEY\", \"status\": \"success\" }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhooks/paystack",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhooks",
+                "paystack"
+              ]
+            },
+            "description": "Like the Monnify simulation above, this is independently re-verified against the real Paystack /transfer/verify endpoint before anything happens \u2014 this is mainly useful for testing signature verification and the 'unknown reference' handling path, not for fabricating a fake successful withdrawal."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "const secretKey = pm.environment.get('paystackSecretKey');",
+                  "const body = pm.request.body.raw;",
+                  "const hash = CryptoJS.HmacSHA512(body, secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'x-paystack-signature', value: hash });"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "8. Admin",
+      "item": [
+        {
+          "name": "Dashboard Summary",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/cooperatives/{{cooperativeId}}/dashboard",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "cooperatives",
+                "{{cooperativeId}}",
+                "dashboard"
+              ]
+            },
+            "description": "Requires the logged-in user's accessToken to belong to a SUPER_ADMIN or the COOPERATIVE_ADMIN of this cooperative. See TESTING.md's SUPER_ADMIN bootstrap note if you get a 404 here."
+          }
+        },
+        {
+          "name": "List Members",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/cooperatives/{{cooperativeId}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "cooperatives",
+                "{{cooperativeId}}",
+                "members"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Overdue Members",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/cooperatives/{{cooperativeId}}/members/overdue",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "cooperatives",
+                "{{cooperativeId}}",
+                "members",
+                "overdue"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Recent Payments",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/cooperatives/{{cooperativeId}}/payments/recent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "cooperatives",
+                "{{cooperativeId}}",
+                "payments",
+                "recent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  const data = pm.response.json();",
+                  "  if (data.length > 0) { pm.environment.set('lastLedgerEntryId', data[0].ledgerEntryId); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Recent Activity Feed",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/cooperatives/{{cooperativeId}}/activity",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "cooperatives",
+                "{{cooperativeId}}",
+                "activity"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Send Announcement",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"GENERAL\",\n  \"audience\": \"ALL\",\n  \"subject\": \"Monthly Reminder\",\n  \"message\": \"Please remember to pay your contribution this month.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/cooperatives/{{cooperativeId}}/announcements",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "cooperatives",
+                "{{cooperativeId}}",
+                "announcements"
+              ]
+            },
+            "description": "With NOTIFICATIONS_DRY_RUN=true, no real email sends \u2014 check your server console for the logged '[DRY RUN] Email...' lines, one per recipient."
+          }
+        },
+        {
+          "name": "Reverse a Payment (Payment Adjustment)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Member paid twice by mistake\",\n  \"memberConsentNote\": \"Member called support and confirmed via phone\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/cooperatives/{{cooperativeId}}/payments/{{lastLedgerEntryId}}/reverse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "cooperatives",
+                "{{cooperativeId}}",
+                "payments",
+                "{{lastLedgerEntryId}}",
+                "reverse"
+              ]
+            },
+            "description": "Uses the ledgerEntryId captured by 'Recent Payments' above \u2014 run that request first. This can only succeed ONCE per payment; running it twice on the same entry correctly returns a Conflict error."
+          }
+        },
+        {
+          "name": "Assign Role (SUPER_ADMIN only)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"COOPERATIVE_ADMIN\",\n  \"cooperativeId\": \"{{cooperativeId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{userId}}/role",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{userId}}",
+                "role"
+              ]
+            },
+            "description": "Requires the CALLING user's own accessToken to already be SUPER_ADMIN. See TESTING.md's bootstrap note \u2014 the very first SUPER_ADMIN must be set manually via Prisma Studio."
+          }
+        },
+        {
+          "name": "VAN Provider Health (SUPER_ADMIN only)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/van-providers/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "van-providers",
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Loans (filter by status)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/cooperatives/{{cooperativeId}}/loans",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "cooperatives",
+                "{{cooperativeId}}",
+                "loans"
+              ]
+            },
+            "description": "Add ?status=REQUESTED (or APPROVED / ACTIVE / REPAID / REJECTED) as a query param to filter."
+          }
+        },
+        {
+          "name": "Approve Loan (Admin A)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/cooperatives/{{cooperativeId}}/loans/{{loanId}}/approve",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "cooperatives",
+                "{{cooperativeId}}",
+                "loans",
+                "{{loanId}}",
+                "approve"
+              ]
+            },
+            "description": "Approval alone moves no money and locks no collateral."
+          }
+        },
+        {
+          "name": "Disburse Loan (must be a DIFFERENT admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/cooperatives/{{cooperativeId}}/loans/{{loanId}}/disburse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "cooperatives",
+                "{{cooperativeId}}",
+                "loans",
+                "{{loanId}}",
+                "disburse"
+              ]
+            },
+            "description": "Switch {{accessToken}} to a different admin (or a SUPER_ADMIN) before sending this. If the same admin who approved tries to disburse, the API rejects it with 403 \u2014 that is separation of duties working correctly."
+          }
+        },
+        {
+          "name": "Reject Loan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/cooperatives/{{cooperativeId}}/loans/{{loanId}}/reject",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "cooperatives",
+                "{{cooperativeId}}",
+                "loans",
+                "{{loanId}}",
+                "reject"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Insufficient repayment history\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "9. Loans (member)",
+      "item": [
+        {
+          "name": "Loan Eligibility",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/memberships/{{membershipId}}/loans/eligibility",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "memberships",
+                "{{membershipId}}",
+                "loans",
+                "eligibility"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Request Loan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/memberships/{{membershipId}}/loans",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "memberships",
+                "{{membershipId}}",
+                "loans"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"20000.00\",\n  \"guarantorMembershipId\": \"{{guarantorMembershipId}}\"\n}"
+            },
+            "description": "Set the guarantorMembershipId environment variable to another ACTIVE member's membership id in the SAME cooperative. That member's available wallet balance must cover the amount."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 201 || pm.response.code === 200) {",
+                  "  pm.environment.set('loanId', pm.response.json().id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        },
+        {
+          "name": "List My Loans",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/memberships/{{membershipId}}/loans",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "memberships",
+                "{{membershipId}}",
+                "loans"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Loan Detail (with outstanding balance)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/memberships/{{membershipId}}/loans/{{loanId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "memberships",
+                "{{membershipId}}",
+                "loans",
+                "{{loanId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Repay Loan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/memberships/{{membershipId}}/loans/{{loanId}}/repay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "memberships",
+                "{{membershipId}}",
+                "loans",
+                "{{loanId}}",
+                "repay"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"5000.00\",\n  \"idempotencyKey\": \"{{$guid}}\"\n}"
+            },
+            "description": "Partial repayments are allowed. Amounts above the outstanding balance are rejected. Only works once the loan is ACTIVE (i.e. approved AND disbursed by two different admins)."
+          }
+        }
+      ]
+    }
+  ]
+}
